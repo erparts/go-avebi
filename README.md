@@ -1,11 +1,11 @@
 # avebi
 
-A video playing library for Ebitengine based on the [erparts/reisen] fork of [zergon321/reisen](https://github.com/zergon321/reisen), with an API design inspired by [tinne26/mpegg](https://github.com/tinne26/mpegg).
+A video playing library for Ebitengine based on the [erparts/reisen](https://github.com/erparts/reisen) fork of [zergon321/reisen](https://github.com/zergon321/reisen), with an API design inspired by [tinne26/mpegg](https://github.com/tinne26/mpegg).
 
 Warnings and limitations:
 - The library is still quite barebones, lacking testing and only trying to cover primary needs for erparts.
 - Reisen uses cgo, so this library inherits the problem (consider purego).
-- The dependency on ffmpeg6.1 is very undesirable and problematic for casual projects.
+- The dependency on ffmpeg6.1 is quite undesirable for casual projects.
 - The `erparts/reisen` fork is only adapted for Linux, so multi-platform support is non-existent.
 - In order to play video with audio, the audio channels need to be stereo and the same length as the video channels.
 
@@ -42,7 +42,7 @@ func (g *Game) Draw(canvas *ebiten.Image) {
 func (g *Game) Update() error {
     var err error
     g.videoFrame, err = g.videoPlayer.CurrentFrame()
-	return err
+    return err
 }
 ```
 
