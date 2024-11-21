@@ -25,6 +25,7 @@ type videoOnlyController struct {
 	referenceTime     time.Time
 	referencePosition time.Duration
 	looping           bool
+	videoPendingLoop  bool
 	state             PlaybackState
 	lastReadFrame     *reisen.VideoFrame
 	//pendingEndStopFrame bool
@@ -124,6 +125,18 @@ func (c *videoOnlyController) noLockPosition(now time.Time) (time.Duration, bool
 			return position, false, nil
 		}
 
+		// consider looping case
+		if c.looping {
+			err := c.stream.Rewind(0)
+			if err != nil {
+				return position, false, err
+			}
+			c.referenceTime = now
+			c.referencePosition = position - c.duration
+			c.videoPendingLoop = true
+			return c.referencePosition, false, nil
+		}
+
 		// here exhausting video frames to fetch the latest one could be reasonable,
 		// but it also comes with some risks, and in practice should be limited to
 		// a maximum decoding of only a few frames. we are avoiding this whole process
@@ -163,6 +176,9 @@ func (c *videoOnlyController) Close() error {
 // will be changed to nil. For end-of-video stops, the reference position
 // will be set to c.duration.
 func (c *videoOnlyController) noLockStop(videoStopMode stopMode) error {
+	// maybe not strictly necessary, but probably safer to reset
+	c.videoPendingLoop = false
+
 	// manual stops need to be handled even if already stopped due to end-of-video
 	if videoStopMode == stopModeManual {
 		c.referencePosition = 0
@@ -209,16 +225,30 @@ func (c *videoOnlyController) Duration() time.Duration {
 	return c.duration
 }
 
-// TODO: UNIMPLEMENTED
-func (c *videoOnlyController) Seek(t time.Duration) (*reisen.VideoFrame, error) {
+func (c *videoOnlyController) Seek(position time.Duration) (*reisen.VideoFrame, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	if t >= c.duration {
-		// TODO: might want to handle this separately? or maybe it returns an error?
-		// hmmm... this might break some ReadVideoFrame assumptions. to be done later
+
+	if position >= c.duration {
+		// while end of video sounds more logical, it introduces issues
+		// with the lastReadFrame, position and so on. for the moment this
+		// should be decent enough
+		err := c.noLockStop(stopModeManual)
+		return nil, err
+	} else {
+		position = max(position, 0)
+		err := c.stream.Rewind(position)
+		if err != nil {
+			return nil, err
+		}
+		c.lastReadFrame, err = c.internalReadVideoFrame()
+		if err != nil {
+			return c.lastReadFrame, err
+		}
+		c.referencePosition = position
+		c.referenceTime = time.Now()
+		return c.lastReadFrame, nil
 	}
-	panic("unimplemented")
-	// return c.stream.Rewind(t)
 }
 
 func (c *videoOnlyController) GetLooping() bool {
@@ -256,16 +286,21 @@ func (c *videoOnlyController) CurrentVideoFrame() (*reisen.VideoFrame, bool, err
 	}
 
 	// get current presentation offset
-	var presOffset time.Duration
+	var prevPresOffset, presOffset time.Duration
 	if c.lastReadFrame != nil {
 		presOffset, err = c.lastReadFrame.PresentationOffset()
 		if err != nil {
 			return nil, false, err
 		}
+		prevPresOffset = presOffset
 	}
 
 	// read frames until we reach the target position
-	for presOffset+c.frameDuration < position {
+	for presOffset+c.frameDuration < position || c.videoPendingLoop {
+		if c.videoPendingLoop && presOffset < prevPresOffset {
+			c.videoPendingLoop = false
+		}
+
 		frame, err := c.internalReadVideoFrame()
 		if err != nil {
 			return nil, false, err
@@ -273,12 +308,23 @@ func (c *videoOnlyController) CurrentVideoFrame() (*reisen.VideoFrame, bool, err
 
 		// check whether the video is stopping
 		if frame == nil {
-			// TODO: missing looping logic
+			if c.looping {
+				err := c.stream.Rewind(0)
+				if err != nil {
+					return nil, false, err
+				}
+				c.referenceTime = now
+				c.referencePosition = 0
+				c.videoPendingLoop = true
+				return c.lastReadFrame, false, nil
+			}
+
 			err = c.noLockStop(stopModeEndOfVideo)
 			return c.lastReadFrame, true, err
 		}
 
 		// otherwise, update presentation offset
+		prevPresOffset = presOffset
 		presOffset, err = frame.PresentationOffset()
 		if err != nil {
 			return nil, false, err

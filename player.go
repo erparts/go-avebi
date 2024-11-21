@@ -263,6 +263,16 @@ func (p *Player) SetMuted(muted bool) {
 	}
 }
 
+// --- looping ---
+
+func (p *Player) SetLooping(looping bool) {
+	p.controller.SetLooping(looping)
+}
+
+func (p *Player) GetLooping() bool {
+	return p.controller.GetLooping()
+}
+
 // --- advanced operations ---
 
 // Completely closes the video player, freeing associated resources. This makes

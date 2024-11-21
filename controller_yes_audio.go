@@ -44,12 +44,13 @@ type videoWithAudioController struct {
 	frameDuration time.Duration
 
 	// state variables
-	looping       bool
-	muted         bool
-	state         PlaybackState
-	volume        float64
-	lastReadFrame *reisen.VideoFrame
-	leftoverVideo []*reisen.VideoFrame
+	looping          bool
+	videoPendingLoop bool
+	muted            bool
+	state            PlaybackState
+	volume           float64
+	lastReadFrame    *reisen.VideoFrame
+	leftoverVideo    []*reisen.VideoFrame
 
 	// audio-specific internal management
 	audioPlayer                 *audio.Player
@@ -166,14 +167,10 @@ func (c *videoWithAudioController) Play() error {
 		}
 
 		if c.audioPlayer == nil {
-			var err error
-			c.audioPlayer, err = audio.CurrentContext().NewPlayer(c)
+			err := c.createAudioPlayer()
 			if err != nil {
 				return err
 			}
-			c.audioPlayer.SetBufferSize(playerBufferSize)
-			c.audioPlayer.SetVolume(c.getEffectiveVolume())
-			c.needsFirstAudioFrameOffset = true
 		}
 		c.state = Playing
 		c.audioPlayer.Play()
@@ -288,21 +285,27 @@ func (c *videoWithAudioController) CurrentVideoFrame() (*reisen.VideoFrame, bool
 	}
 
 	// get current presentation offset
-	var presOffset time.Duration
+	var prevPresOffset, presOffset time.Duration
 	if c.lastReadFrame != nil {
 		presOffset, err = c.lastReadFrame.PresentationOffset()
 		if err != nil {
 			return nil, false, err
 		}
+		prevPresOffset = presOffset
 	}
 
 	// consume leftover video frames until we reach the target position
 	var leftoverIndex int
-	for len(c.leftoverVideo) > leftoverIndex && presOffset+c.frameDuration < position {
+	for len(c.leftoverVideo) > leftoverIndex && (presOffset+c.frameDuration < position || c.videoPendingLoop) {
+		if c.videoPendingLoop && presOffset < prevPresOffset {
+			c.videoPendingLoop = false
+		}
+
 		c.lastReadFrame = c.leftoverVideo[leftoverIndex]
 		leftoverIndex += 1
 
 		// otherwise, update presentation offset
+		prevPresOffset = presOffset
 		presOffset, err = c.lastReadFrame.PresentationOffset()
 		if err != nil {
 			return nil, false, err
@@ -316,7 +319,8 @@ func (c *videoWithAudioController) CurrentVideoFrame() (*reisen.VideoFrame, bool
 	case len(c.leftoverVideo):
 		c.leftoverVideo = c.leftoverVideo[:0]
 	default:
-		copy(c.leftoverVideo, c.leftoverVideo[leftoverIndex:])
+		movedFrames := copy(c.leftoverVideo, c.leftoverVideo[leftoverIndex:])
+		c.leftoverVideo = c.leftoverVideo[:movedFrames]
 	}
 
 	// return the most recent video frame
@@ -366,6 +370,7 @@ func (c *videoWithAudioController) noLockStop(videoStopMode stopMode) error {
 		c.staticPosition = 0
 		c.lastReadFrame = nil
 		c.leftoverVideo = c.leftoverVideo[:0]
+		c.videoPendingLoop = false
 	}
 
 	// already stopped
@@ -382,6 +387,7 @@ func (c *videoWithAudioController) noLockStop(videoStopMode stopMode) error {
 		}
 		c.firstAudioFrameOffsetOnPlay = 0
 		c.staticPosition = c.duration
+		c.videoPendingLoop = false
 	}
 
 	// rewind streams
@@ -425,7 +431,7 @@ func (c *videoWithAudioController) noLockEnsureAudioHalt() error {
 
 // --- internal audio read implementation ---
 
-func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
+func (c *videoWithAudioController) Read(buffer []byte) (servedBytes int, deferredErr error) {
 	// sanity assertion
 	if len(buffer)&0b11 != 0 {
 		if panicOnPartialSampleReads {
@@ -440,7 +446,6 @@ func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
 	defer c.mutex.Unlock()
 
 	// if we had leftover bytes from the previous read, use that
-	var servedBytes int = 0
 	if len(c.leftoverAudio) > 0 {
 		copiedBytes := c.noLockCopyLeftoverAudio(buffer)
 		buffer = buffer[copiedBytes:]
@@ -461,7 +466,20 @@ func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
 
 		// check EOF case
 		if len(c.leftoverAudio) == 0 {
-			// TODO: looping logic would apply here
+			// consider looping case
+			if c.looping {
+				err := c.noLockRewindForLooping()
+				if err != nil {
+					return servedBytes, err
+				}
+
+				defer func() {
+					deferredErr = c.hackyAudioReset()
+				}()
+				return servedBytes, deferredErr
+			}
+
+			// end of video
 			err := c.noLockStop(stopModeEndOfVideo)
 			if err != nil {
 				return servedBytes, err
@@ -489,6 +507,54 @@ func (c *videoWithAudioController) noLockCopyLeftoverAudio(buffer []byte) int {
 		_ = copy(c.leftoverAudio, c.leftoverAudio[copiedBytes:])
 	}
 	return copiedBytes
+}
+
+func (c *videoWithAudioController) noLockRewindForLooping() error {
+	var err error
+	err = c.audio.Rewind(0)
+	if err != nil {
+		return err
+	}
+	err = c.video.Rewind(0)
+	if err != nil {
+		return err
+	}
+	c.videoPendingLoop = true
+	return nil
+}
+
+func (c *videoWithAudioController) createAudioPlayer() error {
+	var err error
+	c.audioPlayer, err = audio.CurrentContext().NewPlayer(c)
+	if err != nil {
+		return err
+	}
+	c.audioPlayer.SetBufferSize(playerBufferSize)
+	c.audioPlayer.SetVolume(c.getEffectiveVolume())
+	c.needsFirstAudioFrameOffset = true
+	return nil
+}
+
+// Note: this is being used to implement audio looping, since keeping
+// the same audio player and manually adding an offset can lead to drifts
+// that end up making the video stop or require more hacks for the logic.
+// this is not great... but it works I guess. notice that the error has
+// to be handled through a named error return variable, which might not
+// be obvious that's happening and accidentally changed.
+func (c *videoWithAudioController) hackyAudioReset() error {
+	c.audioPlayer.Pause()
+	var err error
+	err = c.audioPlayer.Close()
+	if err != nil {
+		return err
+	}
+	err = c.createAudioPlayer()
+	if err != nil {
+		return err
+	}
+	c.audioPlayer.Play()
+
+	return nil
 }
 
 func (c *videoWithAudioController) internalReadAudioFrame() error {
