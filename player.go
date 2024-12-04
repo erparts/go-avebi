@@ -176,6 +176,9 @@ func (p *Player) Resolution() (int, int) {
 // manually through [Player.CurrentFrame]().
 func (p *Player) State() (PlaybackState, error) { return p.controller.State() }
 
+// HasEnded returns whether the video has ended.
+func (p *Player) HasEnded() bool { return p.reachedEnd }
+
 // Play() activates the player's playback clock. If the player is already
 // playing, it just keeps playing and nothing new happens.
 //
