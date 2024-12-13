@@ -504,7 +504,8 @@ func (c *videoWithAudioController) noLockCopyLeftoverAudio(buffer []byte) int {
 		// note: this could be extremely inneficient in theory. in practice
 		// we don't hit the problematic cases, but it's still far from ideal.
 		// to be improved with circular buffers.
-		_ = copy(c.leftoverAudio, c.leftoverAudio[copiedBytes:])
+		newLen := copy(c.leftoverAudio, c.leftoverAudio[copiedBytes:])
+		c.leftoverAudio = c.leftoverAudio[:newLen]
 	}
 	return copiedBytes
 }
