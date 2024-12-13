@@ -1,6 +1,7 @@
 package avebi
 
 import (
+	"fmt"
 	"io"
 	"math"
 	"sync"
@@ -58,6 +59,14 @@ type videoWithAudioController struct {
 	firstAudioFrameOffsetOnPlay time.Duration
 	needsFirstAudioFrameOffset  bool
 	staticPosition              time.Duration // set manually and used when video is paused or stopped
+
+	// debug variables and state
+	playStartTime                time.Time
+	sampleRate                   int
+	totalAudioBytesServed        int
+	totalAudioBytesRead          int
+	lastPositionGet              time.Duration
+	lastReadAudioFramePresOffset time.Duration
 }
 
 func newVideoWithAudioController(media *reisen.Media, videoStream *reisen.VideoStream, audioStream *reisen.AudioStream) (videoController, error) {
@@ -107,6 +116,9 @@ func newVideoWithAudioController(media *reisen.Media, videoStream *reisen.VideoS
 
 		// audio-related internal state
 		leftoverAudio: make([]byte, 0, 1024),
+
+		// debug
+		sampleRate: audioSampleRate,
 	}, err
 }
 
@@ -174,6 +186,7 @@ func (c *videoWithAudioController) Play() error {
 		}
 		c.state = Playing
 		c.audioPlayer.Play()
+		c.playStartTime = time.Now()
 	}
 	return nil
 }
@@ -346,6 +359,7 @@ func (c *videoWithAudioController) noLockPosition() (time.Duration, bool, error)
 
 	position := c.firstAudioFrameOffsetOnPlay + c.audioPlayer.Position()
 	if position < c.duration {
+		c.lastPositionGet = position
 		return position, false, nil
 	}
 
@@ -445,6 +459,33 @@ func (c *videoWithAudioController) Read(buffer []byte) (servedBytes int, deferre
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	readStart := time.Now()
+	defer func() {
+		readEnd := time.Now()
+		samples := servedBytes / 4
+		servedTime := (time.Second * time.Duration(samples)) / time.Duration(c.sampleRate)
+		c.totalAudioBytesServed += servedBytes
+		totalSamplesServed := c.totalAudioBytesServed / 4
+		totalSamplesRead := c.totalAudioBytesRead / 4
+		totalServed := (time.Second * time.Duration(totalSamplesServed)) / time.Duration(c.sampleRate)
+		totalRead := (time.Second * time.Duration(totalSamplesRead)) / time.Duration(c.sampleRate)
+		totalReadSecs := totalRead.Seconds()
+		totalServedSecs := totalServed.Seconds()
+		readTimeSecs := readStart.Sub(c.playStartTime).Seconds()
+		lrafSecs := c.lastReadAudioFramePresOffset.Seconds()
+		lastPosSecs := c.lastPositionGet.Seconds()
+		// TODO: found the drifting! the diff between audio read at and the actual frame reads differs, so even if everything else is
+		//       stable, and player position is stable with time, video is not stable with time... though I don't know exactly why
+		// some ideas:
+		// - measure how much data do the audio frames have, to see if the time offsets and the given data match perfectly or not,
+		//   because otherwise it's not the timing, it's the lack/excess of data
+		fmt.Printf(
+			"audio read at +%.02fs (lastAudioReadPresOffset = %.02fs, diff = %.02fs, lastPosition = %.02f, diff = %.02f), served %dms (%.02fs total, %.02fs read, diff = %.02f, total-read diff = %.02fs) in %dms\n",
+			readTimeSecs, lrafSecs, lrafSecs-readTimeSecs, lastPosSecs, lastPosSecs-readTimeSecs, servedTime.Milliseconds(), totalServedSecs, totalReadSecs, totalServedSecs-readTimeSecs, totalReadSecs-totalServedSecs, readEnd.Sub(readStart).Milliseconds(),
+		)
+		//fmt.Printf(">> leftover video frames: %d, leftover audio: %.02fs\n", len(c.leftoverVideo), ((time.Second * time.Duration(len(c.leftoverAudio)/4)) / time.Duration(c.sampleRate)).Seconds())
+	}()
+
 	// if we had leftover bytes from the previous read, use that
 	if len(c.leftoverAudio) > 0 {
 		copiedBytes := c.noLockCopyLeftoverAudio(buffer)
@@ -503,8 +544,9 @@ func (c *videoWithAudioController) noLockCopyLeftoverAudio(buffer []byte) int {
 	} else {
 		// note: this could be extremely inneficient in theory. in practice
 		// we don't hit the problematic cases, but it's still far from ideal.
-		// to be improved with circular buffers.
-		_ = copy(c.leftoverAudio, c.leftoverAudio[copiedBytes:])
+		// could be improved with circular buffers.
+		newLen := copy(c.leftoverAudio, c.leftoverAudio[copiedBytes:])
+		c.leftoverAudio = c.leftoverAudio[:newLen]
 	}
 	return copiedBytes
 }
@@ -601,12 +643,22 @@ func (c *videoWithAudioController) internalReadAudioFrame() error {
 				c.leftoverAudio = append(c.leftoverAudio, frame.Data()...)
 
 				// if first audio frame since play, store its offset
+				var err error
+				prevOffset := c.lastReadAudioFramePresOffset
+				c.lastReadAudioFramePresOffset, err = frame.PresentationOffset()
+				if err != nil {
+					return err
+				}
+				diff := c.lastReadAudioFramePresOffset - prevOffset
+				_ = diff
+				c.totalAudioBytesRead += len(frame.Data())
+				// fmt.Printf(
+				// 	"read audio frame: presentation offset %.04fs, expected bytes = %d, available bytes = %d\n",
+				// 	c.lastReadAudioFramePresOffset.Seconds(), (4*diff*time.Duration(c.sampleRate))/time.Second, len(frame.Data()),
+				// )
+
 				if c.needsFirstAudioFrameOffset {
-					var err error
-					c.firstAudioFrameOffsetOnPlay, err = frame.PresentationOffset()
-					if err != nil {
-						return err
-					}
+					c.firstAudioFrameOffsetOnPlay = c.lastReadAudioFramePresOffset
 					c.needsFirstAudioFrameOffset = false
 				}
 
