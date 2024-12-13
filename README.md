@@ -49,7 +49,7 @@ func (g *Game) Update() error {
 ## TODO
 
 Potential improvements on avebi:
-- Implement audio looping.
+- Consider async decoding buffering.
 - Use circular buffers for audio data.
 - Add support for mono audio.
 - Add support for videos with audio and video channels of different lengths (annoying).
