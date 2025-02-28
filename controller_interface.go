@@ -1,7 +1,6 @@
 package avebi
 
 import (
-	"errors"
 	"time"
 
 	"github.com/erparts/reisen"
@@ -54,9 +53,6 @@ type videoController interface {
 	// Returns the current video frame, and whether we just reached the end of the video.
 	CurrentVideoFrame() (*reisen.VideoFrame, bool, error)
 }
-
-// temp hack for testing
-var errNotEnoughData = errors.New("now enough data")
 
 // aux type for noLockStop operations on both video only and standard video controllers
 type stopMode bool

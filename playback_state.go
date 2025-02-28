@@ -4,7 +4,7 @@ package avebi
 type PlaybackState uint8
 
 // Returns a string representation of the playback state
-// ("Stopped", "Playing", "Paused", "Unknown").
+// ("Stopped", "Playing", "Paused", "<invalid>").
 func (s PlaybackState) String() string {
 	switch s {
 	case Stopped:
@@ -14,7 +14,7 @@ func (s PlaybackState) String() string {
 	case Paused:
 		return "Paused"
 	default:
-		return "Unknown"
+		return "<invalid>"
 	}
 }
 
@@ -22,4 +22,5 @@ const (
 	Stopped PlaybackState = iota
 	Playing
 	Paused
+	invalidPlaybackState
 )

@@ -224,8 +224,10 @@ func (c *videoWithAudioController) State() (PlaybackState, error) {
 	// we call c.noLockPosition for its side-effects: if the
 	// video has reached the end, that will be detected and
 	// reflected on c.state
-	_, _, err := c.noLockPosition()
-	return c.state, err
+	if _, _, err := c.noLockPosition(); err != nil {
+		return invalidPlaybackState, err
+	}
+	return c.state, nil
 }
 
 func (c *videoWithAudioController) Seek(time.Duration) (*reisen.VideoFrame, error) {
