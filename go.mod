@@ -1,4 +1,4 @@
-module github.com/erparts/avebi
+module github.com/erparts/go-avebi
 
 go 1.23.2
 
