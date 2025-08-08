@@ -39,10 +39,15 @@ func main() {
 
 	// create video player
 	err = avebi.CreateAudioContextForMedia(path)
+	if errors.Is(err, avebi.ErrNoAudio) {
+		fmt.Printf("WARNING: no audio found in video, omitting audio context creation\n")
+		err = nil
+	}
 	if err != nil {
 		panic(err)
 	}
-	videoPlayer, err := avebi.NewPlayer(path)
+
+	videoPlayer, err := avebi.NewPlayer(path) // alternatively: avebi.NewPlayerWithoutAudio(path)
 	if err != nil {
 		panic(err)
 	}
@@ -71,6 +76,9 @@ type MediaPlayer struct {
 
 	lastPosition time.Duration
 	duration     time.Duration
+
+	rectVertices  [4]ebiten.Vertex // clockwise starting from top-left
+	rectWhiteMask *ebiten.Image
 }
 
 func (m *MediaPlayer) Layout(_, _ int) (int, int) {
@@ -98,7 +106,6 @@ func (m *MediaPlayer) Update() error {
 	if err != nil {
 		return err
 	}
-	// ebiten.SetWindowTitle(fmt.Sprintf("%s - %0.2fs", filepath.Base(m.videoPath), position.Seconds()))
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		err := m.videoPlayer.Close()
@@ -144,7 +151,6 @@ func (m *MediaPlayer) Update() error {
 
 // --- additional info and instructions ---
 
-// TODO: a clean GUI would use a faded darkened area, then light colors and icons for bars and text
 func (m *MediaPlayer) drawGUI(canvas *ebiten.Image) {
 	bounds := canvas.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
@@ -152,26 +158,40 @@ func (m *MediaPlayer) drawGUI(canvas *ebiten.Image) {
 	playHeight := h / 48
 	ox := (w - playWidth) / 2
 	oy := h - playHeight*2
+
+	m.setRectTopColor(color.RGBA{0, 0, 0, 0})
+	m.setRectBottomColor(color.RGBA{0, 0, 0, 128})
+	fadeBounds := bounds
+	fadeBounds.Min.Y = fadeBounds.Max.Y - fadeBounds.Dy()/8
+	m.drawRect(canvas, fadeBounds)
+
 	playRect := image.Rect(ox, oy, ox+playWidth, oy+playHeight)
-	canvas.SubImage(playRect).(*ebiten.Image).Fill(color.RGBA{255, 255, 255, 255})
+	m.setRectColor(color.RGBA{255, 255, 255, 255})
+	m.drawRect(canvas, playRect)
+
 	const BorderThickness = 3
-	playRect.Min.X += BorderThickness
-	playRect.Max.X -= BorderThickness
-	playRect.Min.Y += BorderThickness
-	playRect.Max.Y -= BorderThickness
-	canvas.SubImage(playRect).(*ebiten.Image).Fill(color.RGBA{0, 0, 0, 255})
+	playRect = insetRect(playRect, BorderThickness)
+	m.setRectColor(color.RGBA{0, 0, 0, 255})
+	m.drawRect(canvas, playRect)
+
 	const InnerMargin = 2
-	playRect.Min.X += InnerMargin
-	playRect.Max.X -= InnerMargin
-	playRect.Min.Y += InnerMargin
-	playRect.Max.Y -= InnerMargin
+	playRect = insetRect(playRect, InnerMargin)
 	t := float64(m.lastPosition) / float64(m.duration)
 	playRect.Max.X = playRect.Min.X + int(float64(playRect.Dx())*t)
-	canvas.SubImage(playRect).(*ebiten.Image).Fill(color.RGBA{255, 255, 255, 255})
+	m.setRectColor(color.RGBA{255, 255, 255, 255})
+	m.drawRect(canvas, playRect)
 
 	positionStr := durationToMMSS(m.lastPosition)
 	durationStr := durationToMMSS(m.duration)
-	ebitenutil.DebugPrintAt(canvas, positionStr+" / "+durationStr+" (SPACE to pause, S to stop)", ox, oy-16)
+	action := "play"
+	if state, _ := m.videoPlayer.State(); state == avebi.Playing {
+		action = "pause"
+	}
+	ebitenutil.DebugPrintAt(canvas, positionStr+" / "+durationStr+" (SPACE to "+action+", S to stop)", ox, oy-16)
+}
+
+func insetRect(rect image.Rectangle, in int) image.Rectangle {
+	return image.Rect(rect.Min.X+in, rect.Min.Y+in, rect.Max.X-in, rect.Max.Y-in)
 }
 
 func durationToMMSS(duration time.Duration) string {
@@ -181,4 +201,55 @@ func durationToMMSS(duration time.Duration) string {
 	minutes := seconds / 60
 	seconds = seconds % 60
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
+}
+
+func (m *MediaPlayer) drawRect(canvas *ebiten.Image, rect image.Rectangle) {
+	if m.rectWhiteMask == nil {
+		m.rectWhiteMask = ebiten.NewImage(1, 1)
+		m.rectWhiteMask.Fill(color.White)
+		for i := range m.rectVertices {
+			m.rectVertices[i].SrcX = 0.5
+			m.rectVertices[i].SrcY = 0.5
+		}
+	}
+
+	m.rectVertices[0].DstX = float32(rect.Min.X) // top-left
+	m.rectVertices[0].DstY = float32(rect.Min.Y) // top-left
+	m.rectVertices[1].DstX = float32(rect.Max.X) // top-right
+	m.rectVertices[1].DstY = float32(rect.Min.Y) // top-right
+	m.rectVertices[2].DstX = float32(rect.Max.X) // bottom-right
+	m.rectVertices[2].DstY = float32(rect.Max.Y) // bottom-right
+	m.rectVertices[3].DstX = float32(rect.Min.X) // bottom-left
+	m.rectVertices[3].DstY = float32(rect.Max.Y) // bottom-left
+	canvas.DrawTriangles(m.rectVertices[:], []uint16{0, 1, 2, 2, 3, 0}, m.rectWhiteMask, nil)
+}
+
+func (m *MediaPlayer) setRectColor(clr color.RGBA) {
+	r, g, b, a := rgbaToF32(clr)
+	for i := range 4 {
+		setVertexColor(&m.rectVertices[i], r, g, b, a)
+	}
+}
+
+func (m *MediaPlayer) setRectTopColor(clr color.RGBA) {
+	r, g, b, a := rgbaToF32(clr)
+	setVertexColor(&m.rectVertices[0], r, g, b, a)
+	setVertexColor(&m.rectVertices[1], r, g, b, a)
+}
+
+func (m *MediaPlayer) setRectBottomColor(clr color.RGBA) {
+	r, g, b, a := rgbaToF32(clr)
+	setVertexColor(&m.rectVertices[2], r, g, b, a)
+	setVertexColor(&m.rectVertices[3], r, g, b, a)
+}
+
+func setVertexColor(vertex *ebiten.Vertex, r, g, b, a float32) {
+	vertex.ColorR = r
+	vertex.ColorG = g
+	vertex.ColorB = b
+	vertex.ColorA = a
+}
+
+func rgbaToF32(rgba color.RGBA) (float32, float32, float32, float32) {
+	return float32(rgba.R) / 255.0, float32(rgba.G) / 255.0, float32(rgba.B) / 255.0, float32(rgba.A) / 255.0
 }
