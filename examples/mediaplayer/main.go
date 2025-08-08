@@ -136,6 +136,8 @@ func (m *MediaPlayer) Update() error {
 		if err != nil {
 			return err
 		}
+	} else if inpututil.IsKeyJustPressed(ebiten.KeyL) {
+		m.videoPlayer.SetLooping(!m.videoPlayer.GetLooping())
 	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyI) {
@@ -183,11 +185,16 @@ func (m *MediaPlayer) drawGUI(canvas *ebiten.Image) {
 
 	positionStr := durationToMMSS(m.lastPosition)
 	durationStr := durationToMMSS(m.duration)
-	action := "play"
+	spaceAction := "play"
 	if state, _ := m.videoPlayer.State(); state == avebi.Playing {
-		action = "pause"
+		spaceAction = "pause"
 	}
-	ebitenutil.DebugPrintAt(canvas, positionStr+" / "+durationStr+" (SPACE to "+action+", S to stop)", ox, oy-16)
+	loopAction := "enable"
+	if m.videoPlayer.GetLooping() {
+		loopAction = "disable"
+	}
+	info := positionStr + " / " + durationStr + " (SPACE to " + spaceAction + ", S to stop, L to " + loopAction + " looping)"
+	ebitenutil.DebugPrintAt(canvas, info, ox, oy-16)
 }
 
 func insetRect(rect image.Rectangle, in int) image.Rectangle {
