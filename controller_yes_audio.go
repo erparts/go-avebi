@@ -167,7 +167,7 @@ func (c *videoWithAudioController) Play() error {
 		}
 
 		if c.audioPlayer == nil {
-			err := c.createAudioPlayer()
+			err := c.noLockCreateAudioPlayer()
 			if err != nil {
 				return err
 			}
@@ -341,6 +341,8 @@ func (c *videoWithAudioController) getEffectiveVolume() float64 {
 // the returned bool will be true if the video ending is handled as
 // a side effect of calling this function, due to the time exceeding
 // the duration of the video
+//
+// preconditions: c.mutex is locked, can't be called from c.Read()
 func (c *videoWithAudioController) noLockPosition() (time.Duration, bool, error) {
 	if c.audioPlayer == nil || c.needsFirstAudioFrameOffset {
 		return c.staticPosition, false, nil
@@ -361,6 +363,7 @@ func (c *videoWithAudioController) noLockPosition() (time.Duration, bool, error)
 	return c.duration, true, err
 }
 
+// preconditions: c.mutex is locked, can't be called from c.Read() if c.audioPlayer != nil
 func (c *videoWithAudioController) noLockStop(videoStopMode stopMode) error {
 	// manual stops need to be handled even if already stopped due to end-of-video
 	if videoStopMode == stopModeManual {
@@ -417,6 +420,7 @@ func (c *videoWithAudioController) noLockStop(videoStopMode stopMode) error {
 	return c.media.CloseDecode()
 }
 
+// preconditions: c.mutex is locked, can't be called from c.Read() if c.audioPlayer != nil
 func (c *videoWithAudioController) noLockEnsureAudioHalt() error {
 	if c.audioPlayer != nil {
 		c.audioPlayer.Pause()
@@ -433,7 +437,7 @@ func (c *videoWithAudioController) noLockEnsureAudioHalt() error {
 
 // --- internal audio read implementation ---
 
-func (c *videoWithAudioController) Read(buffer []byte) (servedBytes int, deferredErr error) {
+func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
 	// sanity assertion
 	if len(buffer)&0b11 != 0 {
 		if panicOnPartialSampleReads {
@@ -448,6 +452,7 @@ func (c *videoWithAudioController) Read(buffer []byte) (servedBytes int, deferre
 	defer c.mutex.Unlock()
 
 	// if we had leftover bytes from the previous read, use that
+	var servedBytes int
 	if len(c.leftoverAudio) > 0 {
 		copiedBytes := c.noLockCopyLeftoverAudio(buffer)
 		buffer = buffer[copiedBytes:]
@@ -468,17 +473,22 @@ func (c *videoWithAudioController) Read(buffer []byte) (servedBytes int, deferre
 
 		// check EOF case
 		if len(c.leftoverAudio) == 0 {
+			// setting audioPlayer == nil and returning io.EOF will stop the player
+			// from ebitengine's side and force the creation of a new player on the
+			// video player when required. This is important because audioPlayer.Pause()
+			// or other methods can't be called while inside Read(), so we need to
+			// stop through io.EOF
+			c.audioPlayer = nil
+
 			// consider looping case
 			if c.looping {
-				err := c.noLockRewindForLooping()
-				if err != nil {
+				if err := c.noLockRewindForLooping(); err != nil {
 					return servedBytes, err
 				}
-
-				defer func() {
-					deferredErr = c.hackyAudioReset()
-				}()
-				return servedBytes, deferredErr
+				if err := c.noLockHackyAudioReset(); err != nil {
+					return servedBytes, err
+				}
+				return servedBytes, io.EOF
 			}
 
 			// end of video
@@ -512,6 +522,7 @@ func (c *videoWithAudioController) noLockCopyLeftoverAudio(buffer []byte) int {
 	return copiedBytes
 }
 
+// preconditions: c.mutex is locked
 func (c *videoWithAudioController) noLockRewindForLooping() error {
 	var err error
 	err = c.audio.Rewind(0)
@@ -526,7 +537,8 @@ func (c *videoWithAudioController) noLockRewindForLooping() error {
 	return nil
 }
 
-func (c *videoWithAudioController) createAudioPlayer() error {
+// preconditions: c.mutex is locked
+func (c *videoWithAudioController) noLockCreateAudioPlayer() error {
 	var err error
 	c.audioPlayer, err = audio.CurrentContext().NewPlayer(c)
 	if err != nil {
@@ -544,15 +556,10 @@ func (c *videoWithAudioController) createAudioPlayer() error {
 // this is not great... but it works I guess. notice that the error has
 // to be handled through a named error return variable, which might not
 // be obvious that's happening and accidentally changed.
-func (c *videoWithAudioController) hackyAudioReset() error {
-	c.audioPlayer.Pause()
-	var err error
-	err = c.audioPlayer.Close()
-	if err != nil {
-		return err
-	}
-	err = c.createAudioPlayer()
-	if err != nil {
+//
+// preconditions: c.mutex is locked
+func (c *videoWithAudioController) noLockHackyAudioReset() error {
+	if err := c.noLockCreateAudioPlayer(); err != nil {
 		return err
 	}
 	c.audioPlayer.Play()
