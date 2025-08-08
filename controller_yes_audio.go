@@ -540,7 +540,7 @@ func (c *videoWithAudioController) noLockRewindForLooping() error {
 // preconditions: c.mutex is locked
 func (c *videoWithAudioController) noLockCreateAudioPlayer() error {
 	var err error
-	c.audioPlayer, err = audio.CurrentContext().NewPlayer(c)
+	c.audioPlayer, err = audio.CurrentContext().NewPlayer(&struct{ io.Reader }{c})
 	if err != nil {
 		return err
 	}
