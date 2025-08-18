@@ -3,7 +3,7 @@ module github.com/erparts/go-avebi
 go 1.23.2
 
 require (
-	github.com/erparts/reisen v0.0.0-20250228013620-de72aa16d618
+	github.com/erparts/reisen v0.0.0-20250729152830-da1435d66cf7
 	github.com/hajimehoshi/ebiten/v2 v2.8.3
 )
 
