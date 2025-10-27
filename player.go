@@ -126,11 +126,11 @@ func newPlayer(videoFilename string, ignoreAudio bool) (*Player, error) {
 // its contents. This means you can use the image between calls, but you should
 // not store it for later use expecting the image to remain the same.
 func (p *Player) CurrentFrame() (*ebiten.Image, error) {
-	frame, justReachedEnd, err := p.controller.CurrentVideoFrame()
+	frame, reachedEnd, err := p.controller.CurrentVideoFrame()
 	if err != nil {
 		return nil, err
 	}
-	if justReachedEnd {
+	if reachedEnd {
 		p.reachedEnd = true
 	}
 	if frame == nil {

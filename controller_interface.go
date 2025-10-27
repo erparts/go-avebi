@@ -50,7 +50,7 @@ type videoController interface {
 
 	// --- raw methods for reisen values ---
 
-	// Returns the current video frame, and whether we just reached the end of the video.
+	// Returns the current video frame, and whether we reached the end of the video.
 	CurrentVideoFrame() (*reisen.VideoFrame, bool, error)
 }
 

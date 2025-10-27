@@ -194,6 +194,9 @@ func (m *MediaPlayer) drawGUI(canvas *ebiten.Image) {
 		loopAction = "disable"
 	}
 	info := positionStr + " / " + durationStr + " (SPACE to " + spaceAction + ", S to stop, L to " + loopAction + " looping)"
+	if m.videoPlayer.HasEnded() {
+		info += " (ended)"
+	}
 	ebitenutil.DebugPrintAt(canvas, info, ox, oy-16)
 }
 

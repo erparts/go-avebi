@@ -28,7 +28,6 @@ type videoOnlyController struct {
 	videoPendingLoop  bool
 	state             PlaybackState
 	lastReadFrame     *reisen.VideoFrame
-	//pendingEndStopFrame bool
 }
 
 func newVideoOnlyController(media *reisen.Media, videoStream *reisen.VideoStream) (videoController, error) {
@@ -39,7 +38,11 @@ func newVideoOnlyController(media *reisen.Media, videoStream *reisen.VideoStream
 	frNum, frDenom := videoStream.FrameRate()
 	frameDuration := (time.Second * time.Duration(frDenom)) / time.Duration(frNum)
 	duration, err := videoStream.Duration()
-	return &videoOnlyController{
+	if err != nil {
+		return nil, err
+	}
+
+	controller := &videoOnlyController{
 		// underlying reisen objects
 		media:  media,
 		stream: videoStream,
@@ -51,7 +54,8 @@ func newVideoOnlyController(media *reisen.Media, videoStream *reisen.VideoStream
 		// state variables
 		referenceTime: time.Now(),
 		state:         Stopped,
-	}, err
+	}
+	return controller, nil
 }
 
 func (c *videoOnlyController) Play() error {
@@ -273,7 +277,7 @@ func (c *videoOnlyController) CurrentVideoFrame() (*reisen.VideoFrame, bool, err
 		// TODO: in the case of end-of-video, we should probably allow to
 		//       keep reading... but the streams have already been closed.
 		//       It's tricky, unclear what's the best way to deal with it.
-		return c.lastReadFrame, false, nil
+		return c.lastReadFrame, c.referencePosition == c.duration, nil
 	}
 
 	// get target position

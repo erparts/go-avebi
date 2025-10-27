@@ -267,7 +267,7 @@ func (c *videoWithAudioController) CurrentVideoFrame() (*reisen.VideoFrame, bool
 		// NOTICE: here we don't touch c.leftoverVideo because stopping can
 		// happen in different ways and we already set up the lastReadFrame
 		// properly then
-		return c.lastReadFrame, false, nil
+		return c.lastReadFrame, c.staticPosition == c.duration, nil
 	}
 
 	// get target position
