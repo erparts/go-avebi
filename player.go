@@ -55,17 +55,22 @@ type Player struct {
 // Like [NewPlayer](), but ignoring audio streams.
 func NewPlayerWithoutAudio(videoFilename string) (*Player, error) {
 	ignoreAudio := true
-	return newPlayer(videoFilename, ignoreAudio)
+	return newPlayer(videoFilename, ignoreAudio, false)
 }
 
 // Creates a new video [Player]. TODO: ideally we would use io.ReadSeeker,
 // but reisen only has support for explicit filenames.
 func NewPlayer(videoFilename string) (*Player, error) {
 	ignoreAudio := false
-	return newPlayer(videoFilename, ignoreAudio)
+	return newPlayer(videoFilename, ignoreAudio, false)
 }
 
-func newPlayer(videoFilename string, ignoreAudio bool) (*Player, error) {
+// Like [NewPlayer](), but for live streams.
+func NewStreamPlayer(videoFilename string) (*Player, error) {
+	return newPlayer(videoFilename, false, true)
+}
+
+func newPlayer(videoFilename string, ignoreAudio bool, isStream bool) (*Player, error) {
 	// initialize stream
 	container, err := reisen.NewMedia(videoFilename)
 	if err != nil {
@@ -89,19 +94,18 @@ func newPlayer(videoFilename string, ignoreAudio bool) (*Player, error) {
 
 	// check if there's audio streams
 	var controller videoController
-	if len(audioStreams) > 0 && !ignoreAudio {
-		if len(audioStreams) > 1 {
-			pkgLogger.Printf("WARNING: '%s' has multiple audio streams; defaulting to the first", filepath.Base(videoFilename))
-		}
+
+	switch {
+	case isStream:
+		controller, err = newStreamVideoController(container, videoStream)
+	case len(audioStreams) > 0 && !ignoreAudio:
 		controller, err = newVideoWithAudioController(container, videoStream, audioStreams[0])
-		if err != nil {
-			return nil, err
-		}
-	} else {
+	default:
 		controller, err = newVideoOnlyController(container, videoStream)
-		if err != nil {
-			return nil, err
-		}
+	}
+
+	if err != nil {
+		return nil, err
 	}
 
 	// create video player
@@ -145,6 +149,7 @@ func (p *Player) CurrentFrame() (*ebiten.Image, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if presOffset != p.currentPresOffset || p.currentFrame == nil || p.onBlackFrame { // *
 		// * the p.onBlackFrame condition is for safety to disambiguate the zero
 		//   value of currentPresOffset with frames starting at exactly 0
