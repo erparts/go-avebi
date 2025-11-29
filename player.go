@@ -196,6 +196,7 @@ func (p *Player) Play() error {
 		p.currentPresOffset = 0
 		p.reachedEnd = false
 	}
+
 	return p.controller.Play()
 }
 
@@ -279,6 +280,10 @@ func (p *Player) SetLooping(looping bool) {
 
 func (p *Player) GetLooping() bool {
 	return p.controller.GetLooping()
+}
+
+func (p *Player) Error() error {
+	return p.controller.Error()
 }
 
 // --- advanced operations ---

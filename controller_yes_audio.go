@@ -58,6 +58,10 @@ type videoWithAudioController struct {
 	firstAudioFrameOffsetOnPlay time.Duration
 	needsFirstAudioFrameOffset  bool
 	staticPosition              time.Duration // set manually and used when video is paused or stopped
+
+	// last fatal decode/playback error (if any). this is kept internal and
+	// never propagated directly to ebitengine; Read only returns nil or io.EOF.
+	decodeErr error
 }
 
 func newVideoWithAudioController(media *reisen.Media, videoStream *reisen.VideoStream, audioStream *reisen.AudioStream) (videoController, error) {
@@ -139,6 +143,12 @@ func (c *videoWithAudioController) GetMuted() bool {
 	return c.muted
 }
 
+func (c *videoWithAudioController) Error() error {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.decodeErr
+}
+
 // --- videoController implementation ---
 
 func (c *videoWithAudioController) Play() error {
@@ -164,6 +174,7 @@ func (c *videoWithAudioController) Play() error {
 			c.leftoverVideo = c.leftoverVideo[:0]
 			c.lastReadFrame = nil
 			c.firstAudioFrameOffsetOnPlay = 0
+			c.decodeErr = nil
 		}
 
 		if c.audioPlayer == nil {
@@ -201,6 +212,7 @@ func (c *videoWithAudioController) Pause() error {
 	}
 	return nil
 }
+
 func (c *videoWithAudioController) Stop() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -435,8 +447,21 @@ func (c *videoWithAudioController) noLockEnsureAudioHalt() error {
 	return nil
 }
 
-// --- internal audio read implementation ---
+// helper to store a fatal playback/decode error, stop playback, and
+// return io.EOF for Ebiten. This is the only non-nil error that Read
+// ever returns.
+func (c *videoWithAudioController) readHandleError(err error) error {
+	if err != nil && c.decodeErr == nil {
+		c.decodeErr = err
+	}
+	// we ignore errors from noLockStop here to avoid cascading failures
+	_ = c.noLockStop(stopModeEndOfVideo)
+	return io.EOF
+}
 
+// Read is invoked by the Ebiten audio context to retrieve audio data.
+// If an error occurs during this process, it is returned as io.EOF and also
+// recorded as the last decode error, which can later be accessed via Error().
 func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
 	// sanity assertion
 	if len(buffer)&0b11 != 0 {
@@ -466,9 +491,10 @@ func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
 	// decode audio and move it into the buffer
 	for len(buffer) > 0 {
 		// try to decode one audio frame (data is placed on c.leftoverAudio)
-		err := c.internalReadAudioFrame()
-		if err != nil {
-			return servedBytes, err
+		if err := c.internalReadAudioFrame(); err != nil {
+			// real decode error: remember it, gracefully stop, and tell Ebiten
+			// that the stream has finished (EOF), without crashing RunGame.
+			return servedBytes, c.readHandleError(err)
 		}
 
 		// check EOF case
@@ -483,19 +509,22 @@ func (c *videoWithAudioController) Read(buffer []byte) (int, error) {
 			// consider looping case
 			if c.looping {
 				if err := c.noLockRewindForLooping(); err != nil {
-					return servedBytes, err
+					return servedBytes, c.readHandleError(err)
 				}
+
 				if err := c.noLockHackyAudioReset(); err != nil {
-					return servedBytes, err
+					return servedBytes, c.readHandleError(err)
 				}
+
 				return servedBytes, io.EOF
 			}
 
 			// end of video
 			err := c.noLockStop(stopModeEndOfVideo)
 			if err != nil {
-				return servedBytes, err
+				return servedBytes, c.readHandleError(err)
 			}
+
 			return servedBytes, io.EOF
 		}
 
@@ -562,8 +591,8 @@ func (c *videoWithAudioController) noLockHackyAudioReset() error {
 	if err := c.noLockCreateAudioPlayer(); err != nil {
 		return err
 	}
-	c.audioPlayer.Play()
 
+	c.audioPlayer.Play()
 	return nil
 }
 
@@ -608,6 +637,7 @@ func (c *videoWithAudioController) internalReadAudioFrame() error {
 				if err != nil {
 					return err
 				}
+
 				c.leftoverAudio = append(c.leftoverAudio, frame.Data()...)
 
 				// if first audio frame since play, store its offset

@@ -368,3 +368,7 @@ func (c *videoOnlyController) internalReadVideoFrame() (*reisen.VideoFrame, erro
 		}
 	}
 }
+
+func (*videoOnlyController) Error() error {
+	return nil
+}

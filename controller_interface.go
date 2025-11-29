@@ -52,6 +52,10 @@ type videoController interface {
 
 	// Returns the current video frame, and whether we reached the end of the video.
 	CurrentVideoFrame() (*reisen.VideoFrame, bool, error)
+
+	// Returns the last decode error. This is useful to handle errors during the
+	// audio Read operation.
+	Error() error
 }
 
 // aux type for noLockStop operations on both video only and standard video controllers

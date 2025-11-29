@@ -148,6 +148,10 @@ func (m *MediaPlayer) Update() error {
 		fmt.Printf("Video state: %s\n", state.String())
 	}
 
+	if err := m.videoPlayer.Error(); err != nil {
+		return fmt.Errorf("video player error: %w", err)
+	}
+
 	return nil
 }
 

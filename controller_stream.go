@@ -368,3 +368,7 @@ func (c *streamVideoController) scheduleLoop() {
 		}
 	}
 }
+
+func (*streamVideoController) Error() error {
+	return nil
+}
